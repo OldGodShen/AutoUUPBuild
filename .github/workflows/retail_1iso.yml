@@ -108,7 +108,7 @@ jobs:
           prerelease: false
         if: ${{ !steps.check_tag.outputs.tag_exists }}
 
-      - name: Upload Build Artifacts (WIM)
+      - name: Upload Build Artifacts (ISO)
         uses: actions/upload-release-asset@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
