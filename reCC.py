@@ -6,6 +6,9 @@ ini_file = "ConvertConfig.ini"
 # 创建 ConfigParser 对象
 config = configparser.ConfigParser()
 
+# 保留原始大小写
+config.optionxform = str
+
 # 读取 INI 文件
 config.read(ini_file)
 
