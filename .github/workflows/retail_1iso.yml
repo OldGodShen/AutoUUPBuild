@@ -113,7 +113,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          upload_url: ${{ steps.check_tag.outputs.tag_exists ? steps.check_tag.outputs.upload_url : steps.create_release.outputs.upload_url }}
+          upload_url: ${{ steps.check_tag.outputs.upload_url || steps.create_release.outputs.upload_url }}
           asset_path: ${{ env.ISO_FILE }}
           asset_name: ${{ env.ISO_FILE }}
           asset_content_type: application/octet-stream
