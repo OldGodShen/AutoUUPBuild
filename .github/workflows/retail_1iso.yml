@@ -66,8 +66,7 @@ jobs:
           # Find the ISO file in the current directory
           $isoFile = Get-ChildItem -Path . -Filter *.iso | Select-Object -First 1
           if ($isoFile) {
-            echo "ISO_FILE=$isoFile.FullName" >> $env:GITHUB_ENV
-            echo "ISO_FILE_NAME=$isoFile.Name" >> $env:GITHUB_ENV
+            echo "ISO_FILE=$isoFile" >> $env:GITHUB_ENV
           } else {
             echo "Error: ISO file not found."
             exit 1
