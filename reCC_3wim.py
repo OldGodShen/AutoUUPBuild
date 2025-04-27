@@ -13,7 +13,9 @@ config.optionxform = str
 config.read(ini_file)
 
 # 修改 [convert-UUP] 部分中的参数
+config.set("convert-UUP", "AutoStart", "3")
 config.set("convert-UUP", "ResetBase", "1")
+config.set("convert-UUP", "SkipISO", "1")
 config.set("convert-UUP", "SkipWinRE", "1")
 config.set("convert-UUP", "AutoExit", "1")
 
