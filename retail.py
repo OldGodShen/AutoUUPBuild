@@ -19,6 +19,9 @@ def get_latest():
                 # 解析返回的 XML 数据
                 soup = BeautifulSoup(response.content, 'html.parser')
 
+                # 提取 Build number
+                extract_build_number(response.text)
+
                 a_tags = soup.find_all('a')
 
                 # 遍历所有<a>标签，寻找包含特定URL的标签
@@ -30,12 +33,10 @@ def get_latest():
                         if match:
                             id_value = match.group(1)
                             print(f"Extracted ID: {id_value}")
-                            break
+                            return id_value
                 else:
                     print("No matching ID found in the links.")
-                
-                build_number = extract_build_number(response.text)
-                return build_number
+                    return None
             
             elif response.status_code == 429:
                 print(f"Rate limited (429). Retrying in {retry_delay} seconds. Attempt {retries + 1}/{max_retries}")
