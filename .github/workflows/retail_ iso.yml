@@ -32,7 +32,7 @@ jobs:
       # 自定义参数
       - name: Customize parameters
         run: |
-          python reCC_1iso.py
+          python reCC_iso.py
           python reCAL.py
 
       - name: Read version file
@@ -56,7 +56,7 @@ jobs:
 
       # 执行uup_download_windows.cmd
       - name: Run uup_download_windows.cmd
-        shell: cmd
+        shell: cmd7z a -v2G example.7z example.txt
         run: |
           uup_download_windows.cmd  # 执行uup_download_windows.cmd脚本
 
@@ -72,6 +72,13 @@ jobs:
             exit 1
           }
 
+      - name: Find ISO file
+        id: test7z
+        continue-on-error: true
+        run: |
+          7z a -v2G ${{ env.ISO_FILE }}.7z ${{ env.ISO_FILE }}
+
+          
       - name: Upload Build Artifacts (ISO)
         uses: actions/upload-artifact@v4
         with:

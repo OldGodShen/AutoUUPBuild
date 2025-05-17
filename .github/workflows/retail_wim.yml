@@ -32,7 +32,7 @@ jobs:
       # 自定义参数
       - name: Customize parameters
         run: |
-          python reCC_3wim.py
+          python reCC_wim.py
           python reCAL.py
 
       - name: Read version file
@@ -65,7 +65,7 @@ jobs:
           # Check if install.wim exists
           if (Test-Path -Path "install.wim") {
             # Rename install.wim to env.version.wim
-            $newFileName = "$($env:VERSION)_3.wim"
+            $newFileName = "$($env:VERSION).wim"
             Rename-Item -Path "install.wim" -NewName $newFileName
             echo "install.wim has been renamed to $newFileName"
           } else {
@@ -77,7 +77,7 @@ jobs:
         with:
           name: ${{ env.VERSION }}
           path: |
-            ${{ env.VERSION }}_3.wim
+            ${{ env.VERSION }}.wim
 
       - name: Check if tag exists and get existing release
         id: check_tag
@@ -114,6 +114,6 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{ steps.check_tag.outputs.upload_url || steps.create_release.outputs.upload_url }}
-          asset_path: ${{ env.VERSION }}_3.wim
-          asset_name: ${{ env.VERSION }}_3.wim
+          asset_path: ${{ env.VERSION }}.wim
+          asset_name: ${{ env.VERSION }}.wim
           asset_content_type: application/octet-stream
