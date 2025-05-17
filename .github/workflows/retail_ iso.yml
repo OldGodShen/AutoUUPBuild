@@ -56,7 +56,7 @@ jobs:
 
       # 执行uup_download_windows.cmd
       - name: Run uup_download_windows.cmd
-        shell: cmd7z a -v2G example.7z example.txt
+        shell: cmd
         run: |
           uup_download_windows.cmd  # 执行uup_download_windows.cmd脚本
 
@@ -72,7 +72,7 @@ jobs:
             exit 1
           }
 
-      - name: Find ISO file
+      - name: test7z
         id: test7z
         continue-on-error: true
         run: |
