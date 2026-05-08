@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+version
+*.zip
+*.iso
+*.wim
+*.esd
+UUPs/
+ISOFOLDER/
+aria2_script.*
+uup_download_windows.cmd
+ConvertConfig.ini
+CustomAppsList.txt

@@ -1,0 +1,151 @@
+name: Build Windows Image
+
+on:
+  workflow_dispatch:
+    inputs:
+      artifact:
+        description: Output artifact type
+        required: true
+        default: iso
+        type: choice
+        options:
+          - iso
+          - wim
+      arch:
+        description: UUP dump architecture
+        required: true
+        default: amd64
+        type: string
+      ring:
+        description: UUP dump update ring, for example retail or rp
+        required: true
+        default: rp
+        type: string
+      pack:
+        description: Language pack
+        required: true
+        default: zh-cn
+        type: string
+      edition:
+        description: Windows edition
+        required: true
+        default: professional
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run tests
+        run: python -m unittest discover -s tests
+
+      - name: Fetch latest UUP package
+        run: |
+          python -m autouupbuild fetch `
+            --arch "${{ inputs.arch }}" `
+            --ring "${{ inputs.ring }}" `
+            --pack "${{ inputs.pack }}" `
+            --edition "${{ inputs.edition }}" `
+            --output .
+
+      - name: Configure conversion
+        run: |
+          python -m autouupbuild configure `
+            --artifact "${{ inputs.artifact }}" `
+            --config ConvertConfig.ini `
+            --apps-list CustomAppsList.txt
+
+      - name: Read version
+        run: |
+          if (-not (Test-Path -Path "version")) {
+            throw "version file not found."
+          }
+          $version = (Get-Content -Path "version" -Raw).Trim()
+          if (-not $version) {
+            throw "version file is empty."
+          }
+          "VERSION=$version" >> $env:GITHUB_ENV
+
+      - name: Run UUP conversion
+        shell: cmd
+        run: uup_download_windows.cmd
+
+      - name: Prepare ISO artifact
+        if: ${{ inputs.artifact == 'iso' }}
+        run: |
+          $isoFile = Get-ChildItem -Path . -Filter *.iso | Select-Object -First 1
+          if (-not $isoFile) {
+            throw "ISO file not found."
+          }
+          $assetSuffix = "${{ inputs.ring }}-${{ inputs.arch }}-${{ inputs.pack }}-${{ inputs.edition }}-${{ inputs.artifact }}" -replace '[^A-Za-z0-9._-]', '-'
+          $assetName = "$env:VERSION-$assetSuffix$($isoFile.Extension)"
+          "ARTIFACT_PATH=$($isoFile.FullName)" >> $env:GITHUB_ENV
+          "RELEASE_ASSET_NAME=$assetName" >> $env:GITHUB_ENV
+
+      - name: Prepare WIM artifact
+        if: ${{ inputs.artifact == 'wim' }}
+        run: |
+          if (-not (Test-Path -Path "install.wim")) {
+            throw "install.wim not found."
+          }
+          $artifactName = "$env:VERSION.wim"
+          $assetSuffix = "${{ inputs.ring }}-${{ inputs.arch }}-${{ inputs.pack }}-${{ inputs.edition }}-${{ inputs.artifact }}" -replace '[^A-Za-z0-9._-]', '-'
+          $assetName = "$env:VERSION-$assetSuffix.wim"
+          Rename-Item -Path "install.wim" -NewName $artifactName -Force
+          "ARTIFACT_PATH=$((Resolve-Path -Path $artifactName).Path)" >> $env:GITHUB_ENV
+          "RELEASE_ASSET_NAME=$assetName" >> $env:GITHUB_ENV
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.VERSION }}-${{ inputs.ring }}-${{ inputs.artifact }}
+          path: ${{ env.ARTIFACT_PATH }}
+          if-no-files-found: error
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $notesFile = Join-Path $env:RUNNER_TEMP "release-notes-$env:VERSION.md"
+          $releaseNotes = @(
+            "AutoUUPBuild $env:VERSION"
+            ""
+            "Channel: ${{ inputs.ring }}"
+            "Artifact: ${{ inputs.artifact }}"
+            "Architecture: ${{ inputs.arch }}"
+            "Language pack: ${{ inputs.pack }}"
+            "Edition: ${{ inputs.edition }}"
+            "Workflow run: $env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+          ) -join [Environment]::NewLine
+          Set-Content -Path $notesFile -Value $releaseNotes -Encoding utf8
+
+          gh release view "$env:VERSION" 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create "$env:VERSION" --title "$env:VERSION" --notes-file "$notesFile"
+          }
+
+          $release = gh release view "$env:VERSION" --json assets | ConvertFrom-Json
+          $existingAsset = $release.assets | Where-Object { $_.name -eq $env:RELEASE_ASSET_NAME } | Select-Object -First 1
+          if ($existingAsset) {
+            gh release delete-asset "$env:VERSION" "$env:RELEASE_ASSET_NAME" --yes
+          }
+
+          $asset = "$env:ARTIFACT_PATH#$env:RELEASE_ASSET_NAME"
+          gh release upload "$env:VERSION" "$asset"
