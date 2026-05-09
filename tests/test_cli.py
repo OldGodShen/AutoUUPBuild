@@ -64,6 +64,25 @@ vAutoStart = 1
             download_mock.assert_called_once()
             extract_mock.assert_called_once_with(zip_path, output)
 
+    def test_latest_command_writes_github_output(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output_path = Path(tmp) / "github-output.txt"
+            with (
+                patch.dict("os.environ", {"GITHUB_OUTPUT": str(output_path)}),
+                patch("autouupbuild.cli.uupdump.fetch_latest_build", return_value=BuildMetadata("build-id", "26200.8328", "Windows 11, version 25H2")),
+            ):
+                exit_code = cli.main(["latest", "--arch", "amd64", "--ring", "rp", "--github-output"])
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(
+                output_path.read_text(encoding="utf-8").splitlines(),
+                [
+                    "version=26200.8328",
+                    "uuid=build-id",
+                    "title=Windows 11, version 25H2",
+                ],
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

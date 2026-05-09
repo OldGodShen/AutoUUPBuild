@@ -1,0 +1,132 @@
+name: Check for Windows Image Updates
+
+on:
+  schedule:
+    - cron: "0 * * * *"
+  workflow_dispatch:
+    inputs:
+      artifact:
+        description: Output artifact type to build when a new version is found
+        required: true
+        default: iso
+        type: choice
+        options:
+          - iso
+          - wim
+      arch:
+        description: UUP dump architecture
+        required: true
+        default: amd64
+        type: string
+      ring:
+        description: UUP dump update ring, for example retail or rp
+        required: true
+        default: rp
+        type: string
+      pack:
+        description: Language pack
+        required: true
+        default: zh-cn
+        type: string
+      edition:
+        description: Windows edition
+        required: true
+        default: professional
+        type: string
+
+permissions:
+  actions: write
+  contents: read
+
+concurrency:
+  group: check-windows-image-updates
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set defaults
+        id: defaults
+        shell: pwsh
+        run: |
+          $artifact = "${{ github.event.inputs.artifact }}"
+          $arch = "${{ github.event.inputs.arch }}"
+          $ring = "${{ github.event.inputs.ring }}"
+          $pack = "${{ github.event.inputs.pack }}"
+          $edition = "${{ github.event.inputs.edition }}"
+
+          if (-not $artifact) { $artifact = "iso" }
+          if (-not $arch) { $arch = "amd64" }
+          if (-not $ring) { $ring = "rp" }
+          if (-not $pack) { $pack = "zh-cn" }
+          if (-not $edition) { $edition = "professional" }
+
+          "artifact=$artifact" >> $env:GITHUB_OUTPUT
+          "arch=$arch" >> $env:GITHUB_OUTPUT
+          "ring=$ring" >> $env:GITHUB_OUTPUT
+          "pack=$pack" >> $env:GITHUB_OUTPUT
+          "edition=$edition" >> $env:GITHUB_OUTPUT
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Get latest version
+        id: latest
+        run: |
+          python -m autouupbuild latest \
+            --arch "${{ steps.defaults.outputs.arch }}" \
+            --ring "${{ steps.defaults.outputs.ring }}" \
+            --github-output
+
+      - name: Check existing release
+        id: release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "${{ steps.latest.outputs.version }}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Dispatch build
+        if: ${{ steps.release.outputs.exists == 'false' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh workflow run build.yml \
+            --ref "${{ github.ref_name }}" \
+            -f artifact="${{ steps.defaults.outputs.artifact }}" \
+            -f arch="${{ steps.defaults.outputs.arch }}" \
+            -f ring="${{ steps.defaults.outputs.ring }}" \
+            -f pack="${{ steps.defaults.outputs.pack }}" \
+            -f edition="${{ steps.defaults.outputs.edition }}"
+
+      - name: Write summary
+        run: |
+          {
+            echo "## Update check"
+            echo
+            echo "Selected update: ${{ steps.latest.outputs.title }}"
+            echo "Version: ${{ steps.latest.outputs.version }}"
+            echo "UUID: ${{ steps.latest.outputs.uuid }}"
+            echo "Channel: ${{ steps.defaults.outputs.ring }}"
+            echo "Release exists: ${{ steps.release.outputs.exists }}"
+            if [ "${{ steps.release.outputs.exists }}" = "false" ]; then
+              echo "Build dispatched: yes"
+            else
+              echo "Build dispatched: no"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

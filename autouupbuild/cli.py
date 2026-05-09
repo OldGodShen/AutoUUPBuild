@@ -19,6 +19,12 @@ def build_parser():
     fetch.add_argument("--output", default=".", type=Path)
     fetch.set_defaults(func=run_fetch)
 
+    latest = subparsers.add_parser("latest", help="Print the latest build metadata for a UUP dump channel.")
+    latest.add_argument("--arch", default="amd64")
+    latest.add_argument("--ring", default="rp")
+    latest.add_argument("--github-output", action="store_true", help="Write version, uuid, and title to GITHUB_OUTPUT.")
+    latest.set_defaults(func=run_latest)
+
     configure = subparsers.add_parser("configure", help="Apply AutoUUPBuild conversion settings.")
     configure.add_argument("--artifact", choices=("iso", "wim"), required=True)
     configure.add_argument("--config", default="ConvertConfig.ini", type=Path)
@@ -26,6 +32,22 @@ def build_parser():
     configure.set_defaults(func=run_configure)
 
     return parser
+
+
+def run_latest(args):
+    latest = uupdump.fetch_latest_build(arch=args.arch, ring=args.ring)
+    if args.github_output:
+        output_path = Path(_require_env("GITHUB_OUTPUT"))
+        with output_path.open("a", encoding="utf-8") as output:
+            write_github_output(output, "version", latest.build)
+            write_github_output(output, "uuid", latest.uuid)
+            write_github_output(output, "title", latest.title)
+    else:
+        if latest.title:
+            print(f"Selected update: {latest.title}")
+        print(f"Latest build: {latest.build}")
+        print(f"Latest UUID: {latest.uuid}")
+    return 0
 
 
 def run_fetch(args):
@@ -56,6 +78,24 @@ def run_configure(args):
     print(f"Configured {args.config} for {args.artifact.upper()} output.")
     print(f"Enabled {changed} custom app entries in {args.apps_list}.")
     return 0
+
+
+def _require_env(name):
+    import os
+
+    value = os.environ.get(name)
+    if not value:
+        raise RuntimeError(f"{name} is not set")
+    return value
+
+
+def write_github_output(output, name, value):
+    value = value or ""
+    if "\n" in value or "\r" in value:
+        delimiter = f"EOF_{name.upper()}"
+        output.write(f"{name}<<{delimiter}\n{value}\n{delimiter}\n")
+    else:
+        output.write(f"{name}={value}\n")
 
 
 def main(argv=None):
