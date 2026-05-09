@@ -55,7 +55,17 @@ Release assets are named with the version and selected inputs, for example:
 26200.8328-rp-amd64-zh-cn-professional-wim.wim
 ```
 
+When building an ISO, the workflow also copies `sources\install.wim` out of the ISO output and uploads it separately as:
+
+```text
+26200.8328.wim
+```
+
+Workflow artifacts use `archive: false` so ISO/WIM files are uploaded as plain files instead of being wrapped in an additional archive.
+
 If the release already exists, the workflow reuses it. If the same asset name already exists, the workflow deletes that asset before uploading the new one so reruns of the same version succeed.
+
+GitHub Release assets must be smaller than 2 GiB. Larger ISO/WIM files are still uploaded as Actions artifacts with `archive: false`, but the workflow skips adding them to the Release and records that in the workflow summary and release notes.
 
 ## Tests
 

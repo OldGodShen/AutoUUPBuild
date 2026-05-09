@@ -99,6 +99,37 @@ jobs:
           "ARTIFACT_PATH=$($isoFile.FullName)" >> $env:GITHUB_ENV
           "RELEASE_ASSET_NAME=$assetName" >> $env:GITHUB_ENV
 
+      - name: Copy install.wim from ISO output
+        if: ${{ inputs.artifact == 'iso' }}
+        run: |
+          $installWimPath = Join-Path (Get-Location) "$env:VERSION.wim"
+          $buildFolderWim = Join-Path (Get-Location) "ISOFOLDER\sources\install.wim"
+
+          if (Test-Path -Path $buildFolderWim) {
+            Copy-Item -Path $buildFolderWim -Destination $installWimPath -Force
+          } else {
+            $diskImage = Mount-DiskImage -ImagePath $env:ARTIFACT_PATH -PassThru
+            try {
+              $volume = $diskImage | Get-Volume | Where-Object { $_.DriveLetter } | Select-Object -First 1
+              if (-not $volume) {
+                throw "Mounted ISO volume not found."
+              }
+              $mountedWim = "$($volume.DriveLetter):\sources\install.wim"
+              if (-not (Test-Path -Path $mountedWim)) {
+                throw "sources\install.wim not found in ISO."
+              }
+              Copy-Item -Path $mountedWim -Destination $installWimPath -Force
+            } finally {
+              Dismount-DiskImage -ImagePath $env:ARTIFACT_PATH
+            }
+          }
+
+          if (-not (Test-Path -Path $installWimPath)) {
+            throw "Failed to prepare $env:VERSION.wim."
+          }
+          "INSTALL_WIM_PATH=$installWimPath" >> $env:GITHUB_ENV
+          "INSTALL_WIM_RELEASE_ASSET_NAME=$env:VERSION.wim" >> $env:GITHUB_ENV
+
       - name: Prepare WIM artifact
         if: ${{ inputs.artifact == 'wim' }}
         run: |
@@ -118,11 +149,22 @@ jobs:
           name: ${{ env.VERSION }}-${{ inputs.ring }}-${{ inputs.artifact }}
           path: ${{ env.ARTIFACT_PATH }}
           if-no-files-found: error
+          archive: false
+
+      - name: Upload install.wim artifact
+        if: ${{ inputs.artifact == 'iso' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.VERSION }}.wim
+          path: ${{ env.INSTALL_WIM_PATH }}
+          if-no-files-found: error
+          archive: false
 
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          $maxReleaseAssetBytes = 2147483648
           $notesFile = Join-Path $env:RUNNER_TEMP "release-notes-$env:VERSION.md"
           $releaseNotes = @(
             "AutoUUPBuild $env:VERSION"
@@ -139,13 +181,64 @@ jobs:
           gh release view "$env:VERSION" 2>$null
           if ($LASTEXITCODE -ne 0) {
             gh release create "$env:VERSION" --title "$env:VERSION" --notes-file "$notesFile"
+          } else {
+            gh release edit "$env:VERSION" --title "$env:VERSION" --notes-file "$notesFile"
           }
 
-          $release = gh release view "$env:VERSION" --json assets | ConvertFrom-Json
-          $existingAsset = $release.assets | Where-Object { $_.name -eq $env:RELEASE_ASSET_NAME } | Select-Object -First 1
-          if ($existingAsset) {
-            gh release delete-asset "$env:VERSION" "$env:RELEASE_ASSET_NAME" --yes
+          $script:UploadedReleaseAssets = @()
+          $script:SkippedReleaseAssets = @()
+
+          function Upload-ReleaseAsset {
+            param(
+              [Parameter(Mandatory=$true)][string]$AssetPath,
+              [Parameter(Mandatory=$true)][string]$AssetName
+            )
+
+            $source = Get-Item -LiteralPath $AssetPath
+            if ($source.Length -ge $maxReleaseAssetBytes) {
+              $sizeGiB = [Math]::Round($source.Length / 1GB, 2)
+              $message = "$AssetName is $sizeGiB GiB and exceeds GitHub Release asset limit; kept as Actions artifact only."
+              Write-Warning $message
+              $script:SkippedReleaseAssets += $message
+              return
+            }
+
+            $uploadPath = Join-Path $env:RUNNER_TEMP $AssetName
+            Copy-Item -LiteralPath $source.FullName -Destination $uploadPath -Force
+
+            $release = gh release view "$env:VERSION" --json assets | ConvertFrom-Json
+            $existingAsset = $release.assets | Where-Object { $_.name -eq $AssetName } | Select-Object -First 1
+            if ($existingAsset) {
+              gh release delete-asset "$env:VERSION" "$AssetName" --yes
+            }
+
+            gh release upload "$env:VERSION" "$uploadPath"
+            $script:UploadedReleaseAssets += $AssetName
           }
 
-          $asset = "$env:ARTIFACT_PATH#$env:RELEASE_ASSET_NAME"
-          gh release upload "$env:VERSION" "$asset"
+          Upload-ReleaseAsset -AssetPath "$env:ARTIFACT_PATH" -AssetName "$env:RELEASE_ASSET_NAME"
+
+          if ($env:INSTALL_WIM_PATH -and (Test-Path -Path $env:INSTALL_WIM_PATH)) {
+            Upload-ReleaseAsset -AssetPath "$env:INSTALL_WIM_PATH" -AssetName "$env:INSTALL_WIM_RELEASE_ASSET_NAME"
+          }
+
+          $summary = @(
+            "## Release $env:VERSION"
+            ""
+            "Actions artifacts are uploaded with archive=false."
+            ""
+          )
+          if ($script:UploadedReleaseAssets.Count -gt 0) {
+            $summary += "Uploaded release assets:"
+            $summary += $script:UploadedReleaseAssets | ForEach-Object { "- $_" }
+            $summary += ""
+          }
+          if ($script:SkippedReleaseAssets.Count -gt 0) {
+            $summary += "Skipped release assets:"
+            $summary += $script:SkippedReleaseAssets | ForEach-Object { "- $_" }
+            $summary += ""
+          }
+          $summaryText = $summary -join [Environment]::NewLine
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $summaryText
+          Add-Content -Path $notesFile -Value ([Environment]::NewLine + [Environment]::NewLine + $summaryText)
+          gh release edit "$env:VERSION" --title "$env:VERSION" --notes-file "$notesFile"
