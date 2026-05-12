@@ -2,7 +2,7 @@ name: Check for Windows Image Updates
 
 on:
   schedule:
-    - cron: "0 * * * *"
+    - cron: "30 * * * *"
   workflow_dispatch:
     inputs:
       artifact:
