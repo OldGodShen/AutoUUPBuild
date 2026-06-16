@@ -155,18 +155,29 @@ def download_package(
 
 def request_with_retries(request, retries, retry_delay, sleep, action):
     last_status = None
+    last_error = None
     for attempt in range(retries + 1):
         try:
             response = request()
         except requests.RequestException as exc:
+            last_error = exc
+            if attempt < retries:
+                sleep(retry_delay * (attempt + 1))
+                continue
             raise UupDumpError(f"Failed to {action}: {exc}") from exc
 
         if response.status_code == 200:
             return response
         last_status = response.status_code
-        if response.status_code == 429 and attempt < retries:
-            sleep(retry_delay)
+        if is_retryable_status(response.status_code) and attempt < retries:
+            sleep(retry_delay * (attempt + 1))
             continue
         break
 
+    if last_error:
+        raise UupDumpError(f"Failed to {action}: {last_error}") from last_error
     raise UupDumpError(f"Failed to {action}: HTTP {last_status}")
+
+
+def is_retryable_status(status_code):
+    return status_code == 429 or 500 <= status_code < 600

@@ -55,6 +55,26 @@ class UupDumpTests(unittest.TestCase):
         self.assertEqual(metadata.uuid, "2de8f468-d3fa-4e4f-9462-48d86f9ba7af")
         self.assertIn("version 25H2", metadata.title)
 
+    def test_fetch_latest_build_retries_transient_server_error(self):
+        sleeps = []
+        session = FakeSession(
+            FakeResponse(status_code=500, text="server error"),
+            FakeResponse(status_code=200, text=OOBE_FIRST_HTML),
+        )
+
+        metadata = uupdump.fetch_latest_build(
+            arch="amd64",
+            ring="rp",
+            session=session,
+            retries=3,
+            retry_delay=5,
+            sleep=sleeps.append,
+        )
+
+        self.assertEqual(metadata.build, "26200.8328")
+        self.assertEqual(len(session.calls), 2)
+        self.assertEqual(sleeps, [5])
+
     def test_download_filename_from_content_disposition(self):
         headers = {"Content-Disposition": 'attachment; filename="download.zip"'}
 

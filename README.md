@@ -50,6 +50,8 @@ The workflow installs Python dependencies, fetches the latest UUP package, confi
 
 The `Check for Windows Image Updates` workflow runs every hour. It checks the latest full Windows image for the configured channel, defaults to RP, and only dispatches `Build Windows Image` when the matching version release does not already exist. You can also run it manually with the same inputs to force a check without starting a build when the version is already published.
 
+If UUP dump temporarily returns a server error during the scheduled check, the workflow records the failure in the summary and skips dispatching a build for that run. The next scheduled check will retry normally.
+
 Release assets are named with the version and selected inputs, for example:
 
 ```text
