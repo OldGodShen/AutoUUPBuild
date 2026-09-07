@@ -26,18 +26,25 @@ class UupDumpError(RuntimeError):
 
 
 def parse_latest_build(html):
-    build_match = re.search(r"Build number:\s*(\d+\.\d+)", html)
-    fallback_build = build_match.group(1) if build_match else None
-    entries = parse_update_entries(html, fallback_build=fallback_build)
+    return parse_latest_builds(html)[0]
+
+
+def parse_latest_builds(html) -> list[BuildMetadata]:
+    entries = parse_update_entries(html)
     if not entries:
         raise UupDumpError("Build number not found in UUP dump response")
 
-    full_image_entries = [entry for entry in entries if is_full_windows_image(entry.title)]
-    if full_image_entries:
-        return max(full_image_entries, key=lambda entry: build_sort_key(entry.build))
-
-    if len(entries) == 1:
-        return entries[0]
+    latest_by_branch = {}
+    for entry in entries:
+        if not is_full_windows_image(entry.title):
+            continue
+        version = build_sort_key(entry.build)
+        branch = version[0]
+        current = latest_by_branch.get(branch)
+        if current is None or version > build_sort_key(current.build):
+            latest_by_branch[branch] = entry
+    if latest_by_branch:
+        return sorted(latest_by_branch.values(), key=lambda entry: build_sort_key(entry.build), reverse=True)
 
     titles = ", ".join(entry.title or entry.uuid for entry in entries)
     raise UupDumpError(f"No full Windows image entry found in UUP dump response. Candidates: {titles}")
@@ -45,18 +52,39 @@ def parse_latest_build(html):
 
 def parse_update_entries(html, fallback_build=None):
     soup = BeautifulSoup(html, "html.parser")
-    entries = []
+    links = []
     for link in soup.find_all("a"):
         href = link.get("href") or ""
         match = re.search(r"selectlang\.php\?id=([a-fA-F0-9-]+)", href)
-        if not match:
-            continue
+        if match:
+            links.append((link, match.group(1)))
 
+    # Page-level metadata is unambiguous only for a single non-table candidate.
+    if len(links) == 1 and links[0][0].find_parent("tr") is None:
+        if not fallback_build:
+            page_text = normalize_text(" ".join(
+                text for text in soup.find_all(string=True) if text.find_parent("tr") is None
+            ))
+            build_match = re.search(r"Build number:\s*(\d+\.\d+)", page_text)
+            fallback_build = build_match.group(1) if build_match else None
+    else:
+        fallback_build = None
+
+    entries = []
+    for link, uuid in links:
         title = normalize_text(link.get_text(" ", strip=True))
-        build = extract_build_from_text(title) or fallback_build
+        build = extract_build_from_text(title)
+        row = link.find_parent("tr")
+        if not build and row is not None:
+            # Exclude nested rows as well as siblings when resolving this entry.
+            row_text = normalize_text(" ".join(
+                text for text in row.find_all(string=True) if text.find_parent("tr") is row
+            ))
+            build = extract_build_from_text(row_text)
+        build = build or fallback_build
         if not build:
             continue
-        entries.append(BuildMetadata(uuid=match.group(1), build=build, title=title))
+        entries.append(BuildMetadata(uuid=uuid, build=build, title=title))
     return entries
 
 
@@ -77,9 +105,9 @@ def is_full_windows_image(title):
         return False
     if " version " not in normalized and ", version " not in normalized:
         return False
+    if re.search(r"\boobe\b|\bkb", normalized):
+        return False
     blocked_terms = (
-        " oobe ",
-        " kb",
         "critical ",
         "cumulative update",
         "dynamic update",
@@ -95,6 +123,17 @@ def build_sort_key(build):
 
 
 def fetch_latest_build(arch="amd64", ring="retail", session=None, retries=DEFAULT_RETRIES, retry_delay=DEFAULT_RETRY_DELAY, sleep=time.sleep):
+    return fetch_latest_builds(
+        arch=arch,
+        ring=ring,
+        session=session,
+        retries=retries,
+        retry_delay=retry_delay,
+        sleep=sleep,
+    )[0]
+
+
+def fetch_latest_builds(arch="amd64", ring="retail", session=None, retries=DEFAULT_RETRIES, retry_delay=DEFAULT_RETRY_DELAY, sleep=time.sleep) -> list[BuildMetadata]:
     session = session or requests
     url = f"{GET_URL}?arch={arch}&ring={ring}"
     response = request_with_retries(
@@ -104,7 +143,7 @@ def fetch_latest_build(arch="amd64", ring="retail", session=None, retries=DEFAUL
         sleep=sleep,
         action="fetch latest UUP build",
     )
-    return parse_latest_build(response.text)
+    return parse_latest_builds(response.text)
 
 
 def filename_from_headers(headers, build_id):

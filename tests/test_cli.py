@@ -1,3 +1,6 @@
+import contextlib
+import io
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -8,6 +11,104 @@ from autouupbuild.uupdump import BuildMetadata
 
 
 class CliTests(unittest.TestCase):
+    def test_latest_all_branches_writes_json_github_output(self):
+        builds = [
+            BuildMetadata("c1c737c2-f2d9-4824-bb5b-1af515179099", "26200.9278", "Windows 11, version 25H2"),
+            BuildMetadata("d922b79f-142d-4cf8-896b-515abfd01e66", "26100.9278", "Windows 11, version 24H2"),
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            output_path = Path(tmp) / "github-output.txt"
+            with (
+                patch.dict("os.environ", {"GITHUB_OUTPUT": str(output_path)}),
+                patch("autouupbuild.cli.uupdump.fetch_latest_builds", return_value=builds, create=True) as fetch,
+                patch("autouupbuild.cli.uupdump.download_package") as download,
+            ):
+                result = cli.main(["latest", "--all-branches", "--ring", "rp", "--github-output"])
+
+            self.assertEqual(result, 0)
+            fetch.assert_called_once_with(arch="amd64", ring="rp")
+            download.assert_not_called()
+            name, value = output_path.read_text(encoding="utf-8").strip().split("=", 1)
+            self.assertEqual(name, "builds")
+            self.assertEqual(json.loads(value), [
+                {"uuid": build.uuid, "version": build.build, "title": build.title}
+                for build in builds
+            ])
+
+    def test_latest_all_branches_prints_both_versions(self):
+        builds = [
+            BuildMetadata("25h2-id", "26200.9278", "Windows 11, version 25H2"),
+            BuildMetadata("24h2-id", "26100.9278", "Windows 11, version 24H2"),
+        ]
+        with (
+            patch("autouupbuild.cli.uupdump.fetch_latest_builds", return_value=builds, create=True),
+            contextlib.redirect_stdout(io.StringIO()) as output,
+        ):
+            result = cli.main(["latest", "--all-branches"])
+        self.assertEqual(result, 0)
+        for build in builds:
+            self.assertIn(build.build, output.getvalue())
+            self.assertIn(build.uuid, output.getvalue())
+
+    def test_fetch_pinned_version_never_queries_channel_latest(self):
+        build_uuid = "d922b79f-142d-4cf8-896b-515abfd01e66"
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp)
+            package = output / "package.zip"
+            with (
+                patch("autouupbuild.cli.uupdump.fetch_latest_build") as latest,
+                patch("autouupbuild.cli.uupdump.download_package", return_value=package) as download,
+                patch("autouupbuild.cli.extract_zip_safe") as extract,
+            ):
+                result = cli.main([
+                    "fetch", "--uuid", build_uuid, "--build", "26100.9278",
+                    "--ring", "rp", "--pack", "en-us", "--edition", "professional",
+                    "--output", str(output),
+                ])
+            self.assertEqual(result, 0)
+            latest.assert_not_called()
+            download.assert_called_once_with(
+                build_uuid, output_dir=output, pack="en-us", edition="professional",
+            )
+            extract.assert_called_once_with(package, output)
+            self.assertEqual((output / "version").read_text(encoding="utf-8"), "26100.9278")
+
+    def test_fetch_rejects_partial_or_invalid_pinned_metadata(self):
+        valid_uuid = "d922b79f-142d-4cf8-896b-515abfd01e66"
+        for arguments in [
+            ["--uuid", valid_uuid],
+            ["--build", "26100.9278"],
+            ["--uuid", "../bad", "--build", "26100.9278"],
+            ["--uuid", valid_uuid, "--build", "26100.9278\nEVIL=1"],
+        ]:
+            with self.subTest(arguments=arguments), tempfile.TemporaryDirectory() as tmp:
+                with (
+                    patch("autouupbuild.cli.uupdump.fetch_latest_build") as latest,
+                    patch("autouupbuild.cli.uupdump.download_package") as download,
+                    contextlib.redirect_stderr(io.StringIO()),
+                ):
+                    result = cli.main(["fetch", "--output", tmp, *arguments])
+                self.assertNotEqual(result, 0)
+                latest.assert_not_called()
+                download.assert_not_called()
+                self.assertFalse((Path(tmp) / "version").exists())
+
+    def test_latest_all_branches_failure_writes_no_builds(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output_path = Path(tmp) / "github-output.txt"
+            with (
+                patch.dict("os.environ", {"GITHUB_OUTPUT": str(output_path)}),
+                patch(
+                    "autouupbuild.cli.uupdump.fetch_latest_builds",
+                    side_effect=cli.uupdump.UupDumpError("HTTP 500"),
+                    create=True,
+                ),
+                contextlib.redirect_stderr(io.StringIO()),
+            ):
+                result = cli.main(["latest", "--all-branches", "--github-output"])
+            self.assertEqual(result, 1)
+            self.assertFalse(output_path.exists())
+
     def test_configure_command_updates_files(self):
         ini = """
 [convert-UUP]

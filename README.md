@@ -48,7 +48,9 @@ The `Build Windows Image` workflow is manually triggered and accepts:
 
 The workflow installs Python dependencies, fetches the latest UUP package, configures the conversion, runs `uup_download_windows.cmd`, uploads the artifact, and publishes it to a GitHub release tagged with the detected build version, such as `26200.8328`.
 
-The `Check for Windows Image Updates` workflow runs every hour. It checks the latest full Windows image for the configured channel, defaults to RP, and only dispatches `Build Windows Image` when the matching version release does not already exist. You can also run it manually with the same inputs to force a check without starting a build when the version is already published.
+The `Check for Windows Image Updates` workflow runs every hour. It checks the latest full Windows image for the configured channel, defaults to RP, and checks each build branch independently. For example, if both 24H2 (`26100.x`) and 25H2 (`26200.x`) are available, it can dispatch two independent builds. Each build is pinned to the exact update UUID found by the check, so one branch cannot accidentally download the other branch's package. You can also run it manually with the same inputs to force a check without starting a build when the version is already published.
+
+The `Build Windows Image` workflow accepts optional `uuid` and `version` inputs for exact builds. Leave them empty for a normal latest-build manual run; the scheduled checker fills them when dispatching a branch-specific build.
 
 If UUP dump temporarily returns a server error during the scheduled check, the workflow records the failure in the summary and skips dispatching a build for that run. The next scheduled check will retry normally.
 

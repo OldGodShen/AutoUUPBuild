@@ -45,6 +45,14 @@ concurrency:
 jobs:
   check:
     runs-on: ubuntu-latest
+    outputs:
+      ok: ${{ steps.latest.outputs.ok }}
+      builds: ${{ steps.latest.outputs.builds }}
+      artifact: ${{ steps.defaults.outputs.artifact }}
+      arch: ${{ steps.defaults.outputs.arch }}
+      ring: ${{ steps.defaults.outputs.ring }}
+      pack: ${{ steps.defaults.outputs.pack }}
+      edition: ${{ steps.defaults.outputs.edition }}
 
     steps:
       - name: Checkout code
@@ -53,12 +61,18 @@ jobs:
       - name: Set defaults
         id: defaults
         shell: pwsh
+        env:
+          INPUT_ARTIFACT: ${{ inputs.artifact }}
+          INPUT_ARCH: ${{ inputs.arch }}
+          INPUT_RING: ${{ inputs.ring }}
+          INPUT_PACK: ${{ inputs.pack }}
+          INPUT_EDITION: ${{ inputs.edition }}
         run: |
-          $artifact = "${{ github.event.inputs.artifact }}"
-          $arch = "${{ github.event.inputs.arch }}"
-          $ring = "${{ github.event.inputs.ring }}"
-          $pack = "${{ github.event.inputs.pack }}"
-          $edition = "${{ github.event.inputs.edition }}"
+          $artifact = $env:INPUT_ARTIFACT
+          $arch = $env:INPUT_ARCH
+          $ring = $env:INPUT_RING
+          $pack = $env:INPUT_PACK
+          $edition = $env:INPUT_EDITION
 
           if (-not $artifact) { $artifact = "iso" }
           if (-not $arch) { $arch = "amd64" }
@@ -82,13 +96,22 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Get latest version
+      - name: Run tests
+        run: |
+          python -m unittest discover -s tests
+          node --test tests/test_dispatch.cjs
+
+      - name: Get latest version per branch
         id: latest
+        env:
+          UUP_ARCH: ${{ steps.defaults.outputs.arch }}
+          UUP_RING: ${{ steps.defaults.outputs.ring }}
         run: |
           set +e
           python -m autouupbuild latest \
-            --arch "${{ steps.defaults.outputs.arch }}" \
-            --ring "${{ steps.defaults.outputs.ring }}" \
+            --arch "$UUP_ARCH" \
+            --ring "$UUP_RING" \
+            --all-branches \
             --github-output 2>latest-error.log
           status=$?
           set -e
@@ -97,66 +120,87 @@ jobs:
             echo "ok=true" >> "$GITHUB_OUTPUT"
           else
             echo "ok=false" >> "$GITHUB_OUTPUT"
-            {
-              echo "error<<EOF"
-              cat latest-error.log
-              echo "EOF"
-            } >> "$GITHUB_OUTPUT"
+            echo 'builds=[]' >> "$GITHUB_OUTPUT"
             echo "::warning::Failed to fetch latest UUP build; skipping this check run."
             cat latest-error.log
           fi
 
-      - name: Check existing release
-        id: release
-        if: ${{ steps.latest.outputs.ok == 'true' }}
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          if gh release view "${{ steps.latest.outputs.version }}" >/dev/null 2>&1; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Dispatch build
-        if: ${{ steps.latest.outputs.ok == 'true' && steps.release.outputs.exists == 'false' }}
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh workflow run build.yml \
-            --ref "${{ github.ref_name }}" \
-            -f artifact="${{ steps.defaults.outputs.artifact }}" \
-            -f arch="${{ steps.defaults.outputs.arch }}" \
-            -f ring="${{ steps.defaults.outputs.ring }}" \
-            -f pack="${{ steps.defaults.outputs.pack }}" \
-            -f edition="${{ steps.defaults.outputs.edition }}"
-
-      - name: Write summary
+      - name: Summarize unavailable upstream
+        if: ${{ steps.latest.outputs.ok == 'false' }}
         run: |
           {
             echo "## Update check"
             echo
-            if [ "${{ steps.latest.outputs.ok }}" != "true" ]; then
-              echo "Latest fetch: failed"
-              echo "Build dispatched: no"
-              echo
-              echo '```text'
-              if [ -f latest-error.log ]; then
-                cat latest-error.log
-              else
-                echo "${{ steps.latest.outputs.error }}"
-              fi
-              echo '```'
-              exit 0
-            fi
-            echo "Selected update: ${{ steps.latest.outputs.title }}"
-            echo "Version: ${{ steps.latest.outputs.version }}"
-            echo "UUID: ${{ steps.latest.outputs.uuid }}"
-            echo "Channel: ${{ steps.defaults.outputs.ring }}"
-            echo "Release exists: ${{ steps.release.outputs.exists }}"
-            if [ "${{ steps.release.outputs.exists }}" = "false" ]; then
-              echo "Build dispatched: yes"
-            else
-              echo "Build dispatched: no"
-            fi
+            echo "Latest fetch failed; no branch builds dispatched."
+            echo
+            echo '```text'
+            cat latest-error.log
+            echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+  dispatch:
+    name: Check and dispatch ${{ matrix.build.version }}
+    needs: check
+    if: ${{ needs.check.outputs.ok == 'true' && needs.check.outputs.builds != '[]' }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        build: ${{ fromJSON(needs.check.outputs.builds) }}
+    steps:
+      - name: Check release and dispatch pinned build
+        uses: actions/github-script@v8
+        env:
+          BUILD_VERSION: ${{ matrix.build.version }}
+          BUILD_UUID: ${{ matrix.build.uuid }}
+          BUILD_TITLE: ${{ matrix.build.title }}
+          BUILD_ARTIFACT: ${{ needs.check.outputs.artifact }}
+          BUILD_ARCH: ${{ needs.check.outputs.arch }}
+          BUILD_RING: ${{ needs.check.outputs.ring }}
+          BUILD_PACK: ${{ needs.check.outputs.pack }}
+          BUILD_EDITION: ${{ needs.check.outputs.edition }}
+          BUILD_REF: ${{ github.ref_name }}
+        with:
+          script: |
+            const version = process.env.BUILD_VERSION;
+            const uuid = process.env.BUILD_UUID;
+            let published = false;
+            try {
+              await github.rest.repos.getReleaseByTag({
+                ...context.repo,
+                tag: version,
+              });
+              published = true;
+            } catch (error) {
+              if (error.status !== 404) throw error;
+            }
+
+            if (!published) {
+              await github.rest.actions.createWorkflowDispatch({
+                ...context.repo,
+                workflow_id: 'build.yml',
+                ref: process.env.BUILD_REF,
+                inputs: {
+                  artifact: process.env.BUILD_ARTIFACT,
+                  arch: process.env.BUILD_ARCH,
+                  ring: process.env.BUILD_RING,
+                  pack: process.env.BUILD_PACK,
+                  edition: process.env.BUILD_EDITION,
+                  uuid,
+                  version,
+                },
+              });
+            }
+
+            core.info(`${version}: ${published ? 'already published' : 'build dispatched'} (${uuid})`);
+            await core.summary
+              .addHeading(`Update check: ${version}`)
+              .addCodeBlock(JSON.stringify({
+                title: process.env.BUILD_TITLE,
+                version,
+                uuid,
+                channel: process.env.BUILD_RING,
+                releaseExists: published,
+                buildDispatched: !published,
+              }, null, 2), 'json')
+              .write();

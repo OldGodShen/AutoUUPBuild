@@ -1,6 +1,9 @@
 import argparse
+import json
+import re
 import sys
 from pathlib import Path
+from uuid import UUID
 
 from . import uupdump
 from .archive import extract_zip_safe
@@ -17,11 +20,14 @@ def build_parser():
     fetch.add_argument("--pack", default="zh-cn")
     fetch.add_argument("--edition", default="professional")
     fetch.add_argument("--output", default=".", type=Path)
+    fetch.add_argument("--uuid", help="Download this exact UUP update UUID; requires --build.")
+    fetch.add_argument("--build", help="Version paired with --uuid, for example 26100.9278.")
     fetch.set_defaults(func=run_fetch)
 
     latest = subparsers.add_parser("latest", help="Print the latest build metadata for a UUP dump channel.")
     latest.add_argument("--arch", default="amd64")
     latest.add_argument("--ring", default="rp")
+    latest.add_argument("--all-branches", action="store_true", help="Select the latest full image in each build branch.")
     latest.add_argument("--github-output", action="store_true", help="Write version, uuid, and title to GITHUB_OUTPUT.")
     latest.set_defaults(func=run_latest)
 
@@ -35,6 +41,22 @@ def build_parser():
 
 
 def run_latest(args):
+    if args.all_branches:
+        builds = uupdump.fetch_latest_builds(arch=args.arch, ring=args.ring)
+        if args.github_output:
+            payload = [
+                {"uuid": build.uuid, "version": build.build, "title": build.title}
+                for build in builds
+            ]
+            with Path(_require_env("GITHUB_OUTPUT")).open("a", encoding="utf-8") as output:
+                write_github_output(output, "builds", json.dumps(payload, ensure_ascii=True))
+        else:
+            for build in builds:
+                print(f"Selected update: {build.title}")
+                print(f"Latest build: {build.build}")
+                print(f"Latest UUID: {build.uuid}")
+        return 0
+
     latest = uupdump.fetch_latest_build(arch=args.arch, ring=args.ring)
     if args.github_output:
         output_path = Path(_require_env("GITHUB_OUTPUT"))
@@ -51,10 +73,18 @@ def run_latest(args):
 
 
 def run_fetch(args):
+    if args.uuid is not None or args.build is not None:
+        if not args.uuid or not args.build:
+            raise ValueError("--uuid and --build must be provided together")
+        if str(UUID(args.uuid)) != args.uuid.lower():
+            raise ValueError("--uuid must be a canonical UUP update UUID")
+        if not re.fullmatch(r"\d+\.\d+", args.build, flags=re.ASCII):
+            raise ValueError("--build must be a version such as 26100.9278")
+        latest = uupdump.BuildMetadata(uuid=args.uuid, build=args.build)
+    else:
+        latest = uupdump.fetch_latest_build(arch=args.arch, ring=args.ring)
     output = args.output
     output.mkdir(parents=True, exist_ok=True)
-    latest = uupdump.fetch_latest_build(arch=args.arch, ring=args.ring)
-    (output / "version").write_text(latest.build, encoding="utf-8")
     if latest.title:
         print(f"Selected update: {latest.title}")
     print(f"Latest build: {latest.build}")
@@ -68,6 +98,7 @@ def run_fetch(args):
     )
     print(f"Downloaded package: {package}")
     extract_zip_safe(package, output)
+    (output / "version").write_text(latest.build, encoding="utf-8")
     print(f"Extracted package to: {output}")
     return 0
 
